@@ -1,0 +1,26 @@
+SEGMENTATION EVALUATION REPORT
+=================================================================
+Model      : E:\CodeXhunters\Offroad_Segmentation_Scripts\best_segmentation_head.pth
+Data       : E:\CodeXhunters\Offroad_Segmentation_Scripts\..\Offroad_Segmentation_testImages
+N Classes  : 11
+N Samples  : 1002
+
+Mean IoU         : 0.2255
+Mean Dice        : 0.2816
+Pixel Accuracy   : 0.6291
+mAP@0.5          : 0.2404
+
+Per-Class Results:
+Class                       IoU     Dice    mAP@0.5
+-------------------------------------------------------
+Background               0.0000   0.0000       FAIL
+Trees                    0.1990   0.3014       FAIL
+Lush Bushes              0.0007   0.0014       FAIL
+Dry Grass                0.4271   0.5978       FAIL
+Dry Bushes               0.2738   0.3979       FAIL
+Ground Clutter           0.0000   0.0000       FAIL
+Flowers                  0.0000   0.0000       FAIL
+Logs                     0.0000   0.0000       FAIL
+Rocks                    0.0581   0.1035       FAIL
+Landscape                0.5631   0.7174       PASS
+Sky                      0.9584   0.9787       PASS
