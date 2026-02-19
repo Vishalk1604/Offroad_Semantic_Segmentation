@@ -34,17 +34,17 @@ Copy **all files from this repository** into the original `scripts/` folder and 
 Inside the training script you can adjust:
 
 ```python
-N_Epoch
-Backbone_LR
-Dice_weight
+N_EPOCHS
+BACKBONE_LR
+DICE_WEIGHT
 ```
 
 We achieved two main results using:
 
-| Run | N_Epoch | Backbone_LR | Dice_weight | Result   |
+| Run | N_Epoch | Backbone_LR | Dice_weight | mAP@0.5  |
 | --- | ------- | ----------- | ----------- | -------- |
-| 1   | VALUE_1 | VALUE_1     | VALUE_1     | RESULT_1 |
-| 2   | VALUE_2 | VALUE_2     | VALUE_2     | RESULT_2 |
+| 1   | 25      | LR*0.05     | 0.4         | 0.1569   |
+| 2   | 35      | LR*0.08     | 0.25        | 0.1668   |
 
 *(Replace placeholders with actual values/results)*
 
@@ -90,7 +90,7 @@ dinov2_frozen/
 or
 
 ```
-dinov2_unfrozen/
+dinov2_unfreeze/
 ```
 
 ---
@@ -105,12 +105,11 @@ python train_segmentation.py
 
 ### Results
 
-| Mode     | Epochs | Result          |
+| Mode     | Epochs | Result Val IoU  |
 | -------- | ------ | --------------- |
-| Frozen   | 10     | RESULT_FROZEN   |
-| Unfrozen | 10     | RESULT_UNFROZEN |
+| Frozen   | 20     | 0.4762          |
+| Unfrozen | 20     | 0.4781          |
 
-*(Fill after evaluation)*
 
 ---
 
@@ -119,10 +118,10 @@ python train_segmentation.py
 | Model             | IoU             |
 | ----------------- | --------------- |
 | Baseline Provided | **0.29**        |
-| Our Model — Run 1 | RESULT_1        |
-| Our Model — Run 2 | RESULT_2        |
-| DINOv2 Frozen     | RESULT_FROZEN   |
-| DINOv2 Unfrozen   | RESULT_UNFROZEN |
+| Our Model — Run 1 | 0.3749          |
+| Our Model — Run 2 | 0.4083          |
+| DINOv2 Frozen     | 0.4762          |
+| DINOv2 Unfrozen   | 0.4781          |
 
 ---
 
