@@ -1,4 +1,5 @@
 # Off-Road Semantic Segmentation — Reproduction Guide
+<img width="2148" height="523" alt="sample_0000" src="https://github.com/user-attachments/assets/c1e445f0-0aa2-4f83-a75e-60fe0ef6e7f7" />
 
 This repository contains our improved semantic segmentation pipeline developed on top of the provided hackathon baseline.
 We introduce class-weight balancing, decoder architecture upgrades, and backbone experimentation to significantly improve IoU performance over the original model.
