@@ -17,6 +17,7 @@ This guide explains how to reproduce our results.
 ---
 
 ## 🔁 Reproducing Our Main Results
+<img width="2985" height="733" alt="training_curves" src="https://github.com/user-attachments/assets/3cb46c3e-ebb1-4509-ae4e-7629aae3d170" />
 
 ### Step 1 — Replace Default Scripts
 
@@ -76,7 +77,10 @@ To replicate experiments using DINOv2:
 Select **one**:
 
 * Frozen Backbone
-* Unfrozen Backbone
+<img width="2985" height="734" alt="training_curves" src="https://github.com/user-attachments/assets/550a94a7-e9cd-4816-8bcc-7e65a2662aca" />
+
+* Unfrozen Backbon (best results)
+<img width="2985" height="734" alt="training_curves" src="https://github.com/user-attachments/assets/132f73d6-375c-46aa-827f-013eca5fd4d8" />
 
 ---
 
