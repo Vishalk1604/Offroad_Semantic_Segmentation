@@ -1,0 +1,30 @@
+# training outputs
+runs/
+predictions/
+*.pth
+*.pt
+*.ckpt
+class_weights.json
+
+# datasets (large; downloaded from Falcon)
+Offroad_Segmentation_Training_Dataset/
+Offroad_Segmentation_testImages/
+
+# work-in-progress advanced pipeline (reintroduced in later commits)
+_advanced_wip/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+problem.pdf
