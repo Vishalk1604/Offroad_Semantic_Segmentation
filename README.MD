@@ -42,6 +42,30 @@ python Offroad_Segmentation_Scripts/train_segmentation.py
 python Offroad_Segmentation_Scripts/test_segmentation.py
 ```
 
+## Initial Baseline Results
+
+Frozen DINOv2 ViT‑S/14 + small ConvNeXt head, 10 epochs. Full results are committed under
+[`initial_results/`](initial_results/) — `train/` (loss/IoU/Dice/accuracy curves + per‑epoch metrics)
+and `test/` (per‑class IoU chart + sample predictions).
+
+| Metric | Validation (env A) | Test (unseen env B) |
+|---|---|---|
+| **Mean IoU** | **0.2968** | **0.2232** |
+| Dice | 0.4890 | — |
+| Pixel accuracy | 0.7041 | — |
+
+The val→test drop (0.297 → 0.223) is the **domain gap** to the unseen environment — the core problem the
+improvement commits will target.
+
+**Per‑class test IoU** (failure analysis):
+
+| Sky | Landscape | Rocks | Dry Grass | Dry Bushes | Ground Clutter | Trees | Logs | Lush Bushes | Flowers |
+|----:|----------:|------:|----------:|-----------:|---------------:|------:|-----:|------------:|--------:|
+| 0.919 | 0.499 | 0.220 | 0.150 | 0.062 | 0.061 | 0.058 | 0.032 | 0.010 | 0.000 |
+
+Easy, large‑area classes (Sky, Landscape) dominate, while rare/thin classes (Flowers, Lush Bushes, Logs)
+collapse — motivating class‑balanced loss and augmentation in the next steps.
+
 ## Outputs
 
 - `Offroad_Segmentation_Scripts/train_stats/` — loss / IoU / Dice / pixel‑accuracy curves and
@@ -49,6 +73,9 @@ python Offroad_Segmentation_Scripts/test_segmentation.py
 - `Offroad_Segmentation_Scripts/segmentation_head.pth` — trained head weights.
 - `predictions/` — raw + colorized prediction masks, side‑by‑side comparisons, `evaluation_metrics.txt`
   (**mean IoU + per‑class IoU** on the test set), and `per_class_metrics.png`.
+
+A committed snapshot of this baseline run is kept in [`initial_results/`](initial_results/) (summary
+files + a few sample predictions only; the 1002 per‑image masks are not committed).
 
 **Interpreting:** `mean IoU` is the headline metric the challenge scores. Per‑class IoU shows which
 classes lag — expect rare ones (Logs, Flowers, Ground Clutter) to score lowest. These baseline numbers
