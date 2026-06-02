@@ -1,0 +1,19 @@
+EVALUATION RESULTS
+==================================================
+Mean IoU:        0.6507
+Mean Dice:       0.7751
+Pixel Accuracy:  0.8726
+==================================================
+
+Per-Class IoU / Dice:
+--------------------------------------------------
+  Trees            IoU 0.8629   Dice 0.9264
+  Lush Bushes      IoU 0.6986   Dice 0.8226
+  Dry Grass        IoU 0.6950   Dice 0.8201
+  Dry Bushes       IoU 0.4944   Dice 0.6617
+  Ground Clutter   IoU 0.3676   Dice 0.5375
+  Flowers          IoU 0.6655   Dice 0.7991
+  Logs             IoU 0.5510   Dice 0.7105
+  Rocks            IoU 0.5003   Dice 0.6669
+  Landscape        IoU 0.6860   Dice 0.8137
+  Sky              IoU 0.9854   Dice 0.9926

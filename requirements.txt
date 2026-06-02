@@ -1,0 +1,17 @@
+# ---------------------------------------------------------------------------
+# Install PyTorch FIRST and separately (Blackwell / RTX 5060 needs CUDA 12.8):
+#
+#   pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu128
+#
+# Then:  pip install -r requirements.txt
+# ---------------------------------------------------------------------------
+
+transformers>=4.40
+peft>=0.10           # LoRA fallback for adapters
+albumentations>=1.4
+opencv-python>=4.8
+numpy>=1.24
+pillow>=10.0
+matplotlib>=3.7
+tqdm>=4.65
+safetensors>=0.4
