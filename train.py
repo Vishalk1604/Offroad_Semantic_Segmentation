@@ -1,39 +1,40 @@
 """
-Train DINOv2 (frozen) + Rein adapters + DPT head for offroad semantic segmentation.
+Train a frozen DINO backbone + Rein adapters + DPT head for offroad segmentation.
 
 Trains ONLY on train/ + val/. Test images are never touched here.
+Model selection is by **validation present-class mIoU** (the primary metric).
 
-Example:
-    python train.py --backbone base --epochs 50 --batch-size 4 --img-h 378 --img-w 672
+Example (DINOv3-L, high-res, full recipe):
+    python train.py --backbone dinov3-large --img-h 576 --img-w 1024 \
+                    --epochs 150 --batch-size 4 --consistency
 """
 
 import os
 import json
 import math
-import time
 import random
 import argparse
 from datetime import datetime
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from config import get_default_config, Config
+from config import get_default_config, Config, BACKBONES
 from dataset import MaskDataset
 from model import build_model
 from losses import CombinedLoss, get_class_weights
 from metrics import ConfusionMatrix
 
 
-# ---------------------------------------------------------------------------
-# EMA over trainable parameters only (keeps the frozen backbone un-duplicated)
-# ---------------------------------------------------------------------------
 class ParamEMA:
+    """EMA over trainable parameters only (frozen backbone is not duplicated)."""
+
     def __init__(self, model, decay):
         self.decay = decay
         self.shadow = {n: p.detach().clone()
@@ -64,6 +65,13 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
+def sym_kl(l1, l2):
+    """Symmetric per-pixel KL between two logit maps (DG consistency)."""
+    lp1, lp2 = F.log_softmax(l1, dim=1), F.log_softmax(l2, dim=1)
+    p1, p2 = lp1.exp(), lp2.exp()
+    return (0.5 * (p1 * (lp1 - lp2) + p2 * (lp2 - lp1)).sum(1)).mean()
+
+
 @torch.no_grad()
 def evaluate(model, loader, device, loss_fn, amp_dtype):
     model.eval()
@@ -85,8 +93,9 @@ def save_curves(history, out_dir):
     ax[0, 0].plot(ep, history["train_loss"], label="train")
     ax[0, 0].plot(ep, history["val_loss"], label="val")
     ax[0, 0].set_title("Loss"); ax[0, 0].set_xlabel("epoch"); ax[0, 0].legend(); ax[0, 0].grid(True)
-    ax[0, 1].plot(ep, history["val_miou"], color="tab:green")
-    ax[0, 1].set_title("Validation mIoU"); ax[0, 1].set_xlabel("epoch"); ax[0, 1].grid(True)
+    ax[0, 1].plot(ep, history["val_miou"], label="present (7)", color="tab:green")
+    ax[0, 1].plot(ep, history["val_miou_all"], label="all (10)", color="tab:gray", ls="--")
+    ax[0, 1].set_title("Validation mIoU"); ax[0, 1].set_xlabel("epoch"); ax[0, 1].legend(); ax[0, 1].grid(True)
     ax[1, 0].plot(ep, history["val_dice"], color="tab:orange")
     ax[1, 0].set_title("Validation Dice"); ax[1, 0].set_xlabel("epoch"); ax[1, 0].grid(True)
     ax[1, 1].plot(ep, history["val_acc"], color="tab:purple")
@@ -98,7 +107,7 @@ def save_curves(history, out_dir):
 
 def parse_args(cfg: Config):
     p = argparse.ArgumentParser(description="Train offroad segmentation model")
-    p.add_argument("--backbone", default=cfg.backbone, choices=["small", "base", "large"])
+    p.add_argument("--backbone", default=cfg.backbone, choices=sorted(BACKBONES.keys()))
     p.add_argument("--img-h", type=int, default=cfg.img_h)
     p.add_argument("--img-w", type=int, default=cfg.img_w)
     p.add_argument("--epochs", type=int, default=cfg.epochs)
@@ -108,10 +117,15 @@ def parse_args(cfg: Config):
     p.add_argument("--weight-decay", type=float, default=cfg.weight_decay)
     p.add_argument("--warmup-epochs", type=int, default=cfg.warmup_epochs)
     p.add_argument("--num-workers", type=int, default=cfg.num_workers)
+    p.add_argument("--dice-weight", type=float, default=cfg.dice_weight)
+    p.add_argument("--lovasz-weight", type=float, default=cfg.lovasz_weight)
+    p.add_argument("--consistency", action="store_true", help="two-view DG consistency loss")
+    p.add_argument("--consistency-weight", type=float, default=cfg.consistency_weight)
     p.add_argument("--no-rein", action="store_true")
     p.add_argument("--no-ema", action="store_true")
     p.add_argument("--no-class-weights", action="store_true")
     p.add_argument("--no-amp", action="store_true")
+    p.add_argument("--early-stop-patience", type=int, default=cfg.early_stop_patience)
     p.add_argument("--seed", type=int, default=cfg.seed)
     p.add_argument("--resume", type=str, default=None)
     p.add_argument("--out-dir", type=str, default=cfg.out_dir)
@@ -125,9 +139,12 @@ def main():
         backbone=args.backbone, img_h=args.img_h, img_w=args.img_w, epochs=args.epochs,
         batch_size=args.batch_size, grad_accum=args.grad_accum, lr=args.lr,
         weight_decay=args.weight_decay, warmup_epochs=args.warmup_epochs,
-        num_workers=args.num_workers, use_rein=not args.no_rein, use_ema=not args.no_ema,
-        use_class_weights=not args.no_class_weights, amp=not args.no_amp, seed=args.seed,
-        out_dir=args.out_dir,
+        num_workers=args.num_workers, dice_weight=args.dice_weight,
+        lovasz_weight=args.lovasz_weight, consistency=args.consistency,
+        consistency_weight=args.consistency_weight, use_rein=not args.no_rein,
+        use_ema=not args.no_ema, use_class_weights=not args.no_class_weights,
+        amp=not args.no_amp, early_stop_patience=args.early_stop_patience,
+        seed=args.seed, out_dir=args.out_dir,
     ).validate()
 
     set_seed(cfg.seed)
@@ -135,7 +152,7 @@ def main():
     amp_dtype = None
     if cfg.amp and device.type == "cuda":
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    print(f"Device: {device} | AMP: {amp_dtype}")
+    print(f"Device: {device} | AMP: {amp_dtype} | consistency: {cfg.consistency}")
 
     run_dir = os.path.join(cfg.out_dir, datetime.now().strftime("%Y%m%d_%H%M%S"))
     os.makedirs(run_dir, exist_ok=True)
@@ -143,26 +160,24 @@ def main():
         json.dump(cfg.to_dict(), f, indent=2)
 
     # data
-    train_set = MaskDataset("train", cfg.img_h, cfg.img_w, augment=True)
+    train_set = MaskDataset("train", cfg.img_h, cfg.img_w, augment=True, two_view=cfg.consistency)
     val_set = MaskDataset("val", cfg.img_h, cfg.img_w, augment=False)
     print(f"Train: {len(train_set)} | Val: {len(val_set)}")
     train_loader = DataLoader(train_set, batch_size=cfg.batch_size, shuffle=True,
-                              num_workers=cfg.num_workers, pin_memory=True, drop_last=True)
+                              num_workers=cfg.num_workers, pin_memory=True, drop_last=True,
+                              persistent_workers=cfg.num_workers > 0)
     val_loader = DataLoader(val_set, batch_size=cfg.batch_size, shuffle=False,
                             num_workers=cfg.num_workers, pin_memory=True)
 
-    # model
     model = build_model(cfg).to(device)
 
-    # loss
     class_weights = None
     if cfg.use_class_weights:
         class_weights = get_class_weights().to(device)
         print("Class weights:", np.round(class_weights.cpu().numpy(), 3))
-    loss_fn = CombinedLoss(class_weights=class_weights,
-                           ce_weight=cfg.ce_weight, dice_weight=cfg.dice_weight)
+    loss_fn = CombinedLoss(class_weights=class_weights, ce_weight=cfg.ce_weight,
+                           dice_weight=cfg.dice_weight, lovasz_weight=cfg.lovasz_weight)
 
-    # optimizer + cosine schedule with warmup (per optimizer-step)
     optimizer = torch.optim.AdamW(model.trainable_parameters(), lr=cfg.lr,
                                   weight_decay=cfg.weight_decay)
     steps_per_epoch = max(1, len(train_loader) // cfg.grad_accum)
@@ -177,28 +192,34 @@ def main():
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     ema = ParamEMA(model, cfg.ema_decay) if cfg.use_ema else None
-    start_epoch = 0
-    history = {k: [] for k in ["train_loss", "val_loss", "val_miou", "val_dice", "val_acc"]}
+    history = {k: [] for k in ["train_loss", "val_loss", "val_miou", "val_miou_all", "val_dice", "val_acc"]}
     best_miou = -1.0
     epochs_no_improve = 0
 
     if args.resume:
-        ckpt = torch.load(args.resume, map_location=device)
-        model.load_state_dict(ckpt["model"])
-        print(f"Resumed from {args.resume}")
+        model.load_state_dict(torch.load(args.resume, map_location=device)["model"])
+        print(f"Resumed weights from {args.resume}")
 
     print("\nStarting training...\n" + "=" * 70)
-    for epoch in range(start_epoch, cfg.epochs):
+    for epoch in range(cfg.epochs):
         model.train()
         running = []
         optimizer.zero_grad(set_to_none=True)
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.epochs}")
-        for i, (imgs, masks, _) in enumerate(pbar):
-            imgs, masks = imgs.to(device), masks.to(device)
+        for i, batch in enumerate(pbar):
             with torch.autocast(device_type=device.type, dtype=amp_dtype,
                                 enabled=amp_dtype is not None):
-                logits = model(imgs)
-                loss = loss_fn(logits, masks) / cfg.grad_accum
+                if cfg.consistency:
+                    v1, v2, masks, _ = batch
+                    v1, v2, masks = v1.to(device), v2.to(device), masks.to(device)
+                    l1, l2 = model(v1), model(v2)
+                    sup = 0.5 * (loss_fn(l1, masks) + loss_fn(l2, masks))
+                    cons = sym_kl(l1.float(), l2.float())
+                    loss = (sup + cfg.consistency_weight * cons) / cfg.grad_accum
+                else:
+                    imgs, masks, _ = batch
+                    imgs, masks = imgs.to(device), masks.to(device)
+                    loss = loss_fn(model(imgs), masks) / cfg.grad_accum
             loss.backward()
             if (i + 1) % cfg.grad_accum == 0:
                 torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), 1.0)
@@ -217,28 +238,26 @@ def main():
         if ema:
             ema.restore(model, backup)
 
-        miou, dice, acc = cm.mean_iou(), cm.mean_dice(), cm.pixel_accuracy()
-        history["train_loss"].append(float(np.mean(running)))
-        history["val_loss"].append(val_loss)
-        history["val_miou"].append(miou)
-        history["val_dice"].append(dice)
-        history["val_acc"].append(acc)
+        miou, miou_all = cm.present_mean_iou(), cm.mean_iou()
+        dice, acc = cm.mean_dice(), cm.pixel_accuracy()
+        for k, v in zip(["train_loss", "val_loss", "val_miou", "val_miou_all", "val_dice", "val_acc"],
+                        [float(np.mean(running)), val_loss, miou, miou_all, dice, acc]):
+            history[k].append(v)
         print(f"Epoch {epoch+1}: train_loss={np.mean(running):.4f} val_loss={val_loss:.4f} "
-              f"val_mIoU={miou:.4f} val_Dice={dice:.4f} val_acc={acc:.4f}")
+              f"val_mIoU(present)={miou:.4f} val_mIoU(all)={miou_all:.4f} val_acc={acc:.4f}")
 
-        # checkpoint best (save EMA weights into the full state_dict)
         if miou > best_miou:
             best_miou = miou
             epochs_no_improve = 0
             backup = ema.copy_to(model) if ema else None
             torch.save({"model": model.state_dict(), "config": cfg.to_dict(),
-                        "val_miou": miou, "epoch": epoch + 1},
+                        "val_miou": miou, "val_miou_all": miou_all, "epoch": epoch + 1},
                        os.path.join(run_dir, "best.pth"))
             if ema:
                 ema.restore(model, backup)
             with open(os.path.join(run_dir, "per_class_iou_best.txt"), "w") as f:
                 f.write(cm.summary_str())
-            print(f"  ** new best mIoU {miou:.4f} -> saved best.pth")
+            print(f"  ** new best present mIoU {miou:.4f} -> saved best.pth")
         else:
             epochs_no_improve += 1
 
@@ -247,18 +266,17 @@ def main():
                    os.path.join(run_dir, "last.pth"))
 
         if epochs_no_improve >= cfg.early_stop_patience:
-            print(f"Early stopping (no val mIoU improvement for {cfg.early_stop_patience} epochs).")
+            print(f"Early stopping (no val present-mIoU gain for {cfg.early_stop_patience} epochs).")
             break
 
-    # final history dump
     with open(os.path.join(run_dir, "metrics.txt"), "w") as f:
-        f.write(f"Best val mIoU: {best_miou:.4f}\n\n")
-        f.write("epoch\ttrain_loss\tval_loss\tval_mIoU\tval_Dice\tval_acc\n")
+        f.write(f"Best val present-class mIoU: {best_miou:.4f}\n\n")
+        f.write("epoch\ttrain_loss\tval_loss\tval_mIoU_present\tval_mIoU_all\tval_Dice\tval_acc\n")
         for i in range(len(history["train_loss"])):
             f.write(f"{i+1}\t{history['train_loss'][i]:.4f}\t{history['val_loss'][i]:.4f}\t"
-                    f"{history['val_miou'][i]:.4f}\t{history['val_dice'][i]:.4f}\t"
-                    f"{history['val_acc'][i]:.4f}\n")
-    print(f"\nDone. Best val mIoU: {best_miou:.4f}\nOutputs in: {run_dir}")
+                    f"{history['val_miou'][i]:.4f}\t{history['val_miou_all'][i]:.4f}\t"
+                    f"{history['val_dice'][i]:.4f}\t{history['val_acc'][i]:.4f}\n")
+    print(f"\nDone. Best val present-class mIoU: {best_miou:.4f}\nOutputs in: {run_dir}")
 
 
 if __name__ == "__main__":

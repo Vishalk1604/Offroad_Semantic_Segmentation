@@ -66,22 +66,37 @@ COLOR_PALETTE = [
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
-PATCH_SIZE = 14  # DINOv2 patch size; image H/W must be multiples of this.
-
-# DINOv2 backbone variants (HuggingFace model id, embed dim, depth).
+# Backbone variants: name -> (HuggingFace model id, patch_size). Hidden dim, depth, and
+# number of register tokens are read from the model config at build time, so adding a new
+# ViT backbone here is enough.
 BACKBONES = {
-    "small": ("facebook/dinov2-small", 384, 12),
-    "base":  ("facebook/dinov2-base", 768, 12),
-    "large": ("facebook/dinov2-large", 1024, 24),
+    # DINOv2 (open access)
+    "dinov2-small":     ("facebook/dinov2-small", 14),
+    "dinov2-base":      ("facebook/dinov2-base", 14),
+    "dinov2-large":     ("facebook/dinov2-large", 14),
+    # DINOv2 with registers (open; register tokens -> cleaner dense maps)
+    "dinov2-reg-base":  ("facebook/dinov2-with-registers-base", 14),
+    "dinov2-reg-large": ("facebook/dinov2-with-registers-large", 14),
+    # DINOv3 (GATED: accept license on HF + `huggingface-cli login`)
+    "dinov3-base":      ("facebook/dinov3-vitb16-pretrain-lvd1689m", 16),
+    "dinov3-large":     ("facebook/dinov3-vitl16-pretrain-lvd1689m", 16),
+    # backward-compat aliases for earlier checkpoints (config saved backbone='base', etc.)
+    "small": ("facebook/dinov2-small", 14),
+    "base":  ("facebook/dinov2-base", 14),
+    "large": ("facebook/dinov2-large", 14),
 }
+
+
+def patch_size_of(backbone: str) -> int:
+    return BACKBONES[backbone][1]
 
 
 @dataclass
 class Config:
     # data / model
-    backbone: str = "base"
-    img_h: int = 378            # 27 * 14  (16:9 with img_w=672)
-    img_w: int = 672            # 48 * 14
+    backbone: str = "dinov3-large"
+    img_h: int = 576            # 36 * 16 (16:9)
+    img_w: int = 1024           # 64 * 16
     num_classes: int = NUM_CLASSES
 
     # Rein adapters
@@ -100,7 +115,12 @@ class Config:
     # loss
     ce_weight: float = 1.0
     dice_weight: float = 1.0
+    lovasz_weight: float = 1.0          # Lovasz-Softmax: directly optimizes IoU
     use_class_weights: bool = True
+
+    # domain-generalization consistency regularization (two photometric views)
+    consistency: bool = False
+    consistency_weight: float = 1.0
 
     # EMA / regularization
     use_ema: bool = True
@@ -113,9 +133,10 @@ class Config:
     out_dir: str = os.path.join(ROOT, "runs")
 
     def validate(self):
-        assert self.img_h % PATCH_SIZE == 0 and self.img_w % PATCH_SIZE == 0, \
-            f"img_h/img_w must be multiples of {PATCH_SIZE}"
         assert self.backbone in BACKBONES, f"backbone must be one of {list(BACKBONES)}"
+        p = patch_size_of(self.backbone)
+        assert self.img_h % p == 0 and self.img_w % p == 0, \
+            f"img_h/img_w must be multiples of {p} for backbone '{self.backbone}'"
         return self
 
     def to_dict(self):

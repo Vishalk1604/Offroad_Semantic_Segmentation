@@ -61,6 +61,44 @@ def get_class_weights(cache_path: str = None, **kw) -> torch.Tensor:
     return torch.tensor(weights, dtype=torch.float32)
 
 
+# ---------------------------------------------------------------------------
+# Lovasz-Softmax (Berman et al., 2018) — a smooth surrogate that directly optimizes
+# the IoU (Jaccard) index. Strong for rare / thin classes where CE+Dice plateau.
+# ---------------------------------------------------------------------------
+def _lovasz_grad(gt_sorted):
+    p = len(gt_sorted)
+    gts = gt_sorted.sum()
+    intersection = gts - gt_sorted.float().cumsum(0)
+    union = gts + (1 - gt_sorted).float().cumsum(0)
+    jaccard = 1.0 - intersection / union
+    if p > 1:
+        jaccard[1:p] = jaccard[1:p] - jaccard[0:-1]
+    return jaccard
+
+
+def lovasz_softmax(probs, target, ignore_index: int = IGNORE_INDEX):
+    """probs: (B,C,H,W) softmax probabilities; target: (B,H,W). Averages over the
+    classes present in the batch ('present' variant)."""
+    b, c, h, w = probs.shape
+    probs = probs.permute(0, 2, 3, 1).reshape(-1, c)        # (P, C)
+    target = target.reshape(-1)                             # (P,)
+    valid = target != ignore_index
+    probs, target = probs[valid], target[valid]
+    if probs.numel() == 0:
+        return probs.sum() * 0.0
+    losses = []
+    for cls in range(c):
+        fg = (target == cls).float()
+        if fg.sum() == 0:                                   # class absent in this batch
+            continue
+        errors = (fg - probs[:, cls]).abs()
+        errors_sorted, perm = torch.sort(errors, dim=0, descending=True)
+        losses.append(torch.dot(errors_sorted, _lovasz_grad(fg[perm])))
+    if not losses:
+        return probs.sum() * 0.0
+    return torch.stack(losses).mean()
+
+
 class DiceLoss(nn.Module):
     def __init__(self, num_classes: int = NUM_CLASSES, ignore_index: int = IGNORE_INDEX,
                  smooth: float = 1.0):
@@ -83,14 +121,21 @@ class DiceLoss(nn.Module):
 
 
 class CombinedLoss(nn.Module):
-    """ce_weight * CE(class_weights) + dice_weight * Dice."""
+    """ce_w * CE(class_weights) + dice_w * Dice + lovasz_w * Lovasz-Softmax."""
 
-    def __init__(self, class_weights=None, ce_weight: float = 1.0,
-                 dice_weight: float = 1.0, ignore_index: int = IGNORE_INDEX):
+    def __init__(self, class_weights=None, ce_weight: float = 1.0, dice_weight: float = 1.0,
+                 lovasz_weight: float = 1.0, ignore_index: int = IGNORE_INDEX):
         super().__init__()
         self.ce = nn.CrossEntropyLoss(weight=class_weights, ignore_index=ignore_index)
         self.dice = DiceLoss(ignore_index=ignore_index)
-        self.ce_w, self.dice_w = ce_weight, dice_weight
+        self.ce_w, self.dice_w, self.lovasz_w = ce_weight, dice_weight, lovasz_weight
+        self.ignore_index = ignore_index
 
     def forward(self, logits, target):
-        return self.ce_w * self.ce(logits, target) + self.dice_w * self.dice(logits, target)
+        loss = self.ce_w * self.ce(logits, target)
+        if self.dice_w:
+            loss = loss + self.dice_w * self.dice(logits, target)
+        if self.lovasz_w:
+            probs = F.softmax(logits.float(), dim=1)
+            loss = loss + self.lovasz_w * lovasz_softmax(probs, target, self.ignore_index)
+        return loss

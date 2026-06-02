@@ -1,22 +1,21 @@
 """
-Model: frozen DINOv2 (vision foundation backbone) + Rein-style adapters + DPT decoder.
+Model: frozen DINO (vision foundation backbone) + Rein-style adapters + DPT decoder.
 
-  - Backbone: HuggingFace `Dinov2Model`, fully frozen and run under no_grad. Its
-    self-supervised features generalize across domains, which is what the unseen-test-
-    environment score depends on.
-  - Rein adapters: lightweight learnable-token refinement applied to the tapped patch
-    tokens (parameter-efficient domain adaptation; only a few M trainable params). This
-    is a memory-friendly take on Rein (CVPR'24) that keeps the backbone fully frozen so
-    it fits 8 GB. Swap to LoRA via `peft` if desired — same story.
+  - Backbone: any HuggingFace ViT loaded via `AutoModel` (DINOv2, DINOv2-with-registers,
+    or DINOv3). Fully frozen and run under no_grad — its self-supervised features carry
+    the cross-domain generalization. Hidden dim, depth, patch size, and number of register
+    tokens are read from the model config, so the same code handles all variants.
+  - Rein adapters: lightweight learnable-token refinement on the tapped patch tokens
+    (parameter-efficient domain adaptation; few M trainable params, backbone stays frozen).
   - Decoder: DPT-style multi-scale reassemble + RefineNet fusion head.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import Dinov2Model
+from transformers import AutoModel
 
-from config import BACKBONES, PATCH_SIZE
+from config import BACKBONES
 
 
 # ---------------------------------------------------------------------------
@@ -114,18 +113,25 @@ class DPTHead(nn.Module):
 class OffroadSegModel(nn.Module):
     def __init__(self, cfg):
         super().__init__()
-        model_id, dim, depth = BACKBONES[cfg.backbone]
-        self.backbone = Dinov2Model.from_pretrained(model_id)
+        model_id, patch = BACKBONES[cfg.backbone]
+        self.backbone = AutoModel.from_pretrained(model_id)
         self.backbone.requires_grad_(False)
         self.backbone.eval()
 
+        bcfg = self.backbone.config
+        dim = bcfg.hidden_size
+        depth = bcfg.num_hidden_layers
+        self.patch = getattr(bcfg, "patch_size", patch)
+        # tokens to skip before the patch tokens: CLS (1) + register tokens (0 or 4)
+        self.n_skip = 1 + getattr(bcfg, "num_register_tokens", 0)
         self.taps = [depth // 4, depth // 2, 3 * depth // 4, depth]  # hidden_states indices
-        self.gh = cfg.img_h // PATCH_SIZE
-        self.gw = cfg.img_w // PATCH_SIZE
+
         self.use_rein = cfg.use_rein
         if self.use_rein:
             self.adapters = nn.ModuleList([ReinAdapter(dim, cfg.rein_tokens) for _ in self.taps])
         self.head = DPTHead(dim, cfg.num_classes)
+        self._desc = (f"{cfg.backbone} (dim={dim}, depth={depth}, patch={self.patch}, "
+                      f"reg={self.n_skip - 1})")
 
     def train(self, mode: bool = True):
         super().train(mode)
@@ -137,14 +143,14 @@ class OffroadSegModel(nn.Module):
 
     def forward(self, x):
         out_size = x.shape[-2:]
-        # token grid is derived from the actual input size, not a fixed train-time size,
-        # so the model works at any resolution (e.g. TTA multi-scale or a different --img-h/w).
-        gh, gw = x.shape[-2] // PATCH_SIZE, x.shape[-1] // PATCH_SIZE
+        # token grid derived from the actual input size, so any resolution works
+        # (TTA multi-scale, different --img-h/w, etc.).
+        gh, gw = x.shape[-2] // self.patch, x.shape[-1] // self.patch
         with torch.no_grad():
             hidden = self.backbone(x, output_hidden_states=True).hidden_states
         feats = []
         for i, t in enumerate(self.taps):
-            tok = hidden[t][:, 1:, :]                  # drop CLS token -> (B, N, C)
+            tok = hidden[t][:, self.n_skip:, :]        # drop CLS + register tokens -> (B,N,C)
             tok = tok.float()                          # decoder runs in fp32
             if self.use_rein:
                 tok = self.adapters[i](tok)
@@ -158,7 +164,7 @@ def build_model(cfg):
     model = OffroadSegModel(cfg)
     n_train = sum(p.numel() for p in model.trainable_parameters())
     n_total = sum(p.numel() for p in model.parameters())
-    print(f"Model: DINOv2-{cfg.backbone} (frozen) + "
+    print(f"Model: {model._desc} (frozen) + "
           f"{'Rein adapters + ' if cfg.use_rein else ''}DPT head")
     print(f"  Trainable params: {n_train/1e6:.2f}M / {n_total/1e6:.2f}M total")
     return model

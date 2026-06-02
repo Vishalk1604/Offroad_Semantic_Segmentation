@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from config import Config, NUM_CLASSES, CLASS_NAMES, IMAGENET_MEAN, IMAGENET_STD, PATCH_SIZE
+from config import Config, NUM_CLASSES, CLASS_NAMES, IMAGENET_MEAN, IMAGENET_STD
 from dataset import MaskDataset
 from model import build_model
 from metrics import ConfusionMatrix, mask_to_color
@@ -34,12 +34,12 @@ def denormalize(img_tensor):
     return np.clip(img * 255, 0, 255).astype(np.uint8)
 
 
-def round14(x):
-    return max(PATCH_SIZE, int(round(x / PATCH_SIZE)) * PATCH_SIZE)
+def round_to_patch(x, patch):
+    return max(patch, int(round(x / patch)) * patch)
 
 
 @torch.no_grad()
-def predict_prob(model, imgs, device, amp_dtype, tta=False):
+def predict_prob(model, imgs, device, amp_dtype, tta=False, patch=14):
     """Return per-pixel class probabilities (B, C, H, W)."""
     H, W = imgs.shape[-2:]
 
@@ -53,7 +53,7 @@ def predict_prob(model, imgs, device, amp_dtype, tta=False):
         prob = prob + torch.flip(fwd(torch.flip(imgs, dims=[3])), dims=[3])
         n = 2
         for s in (0.75, 1.25):
-            sh, sw = round14(H * s), round14(W * s)
+            sh, sw = round_to_patch(H * s, patch), round_to_patch(W * s, patch)
             scaled = F.interpolate(imgs, size=(sh, sw), mode="bilinear", align_corners=False)
             p = fwd(scaled)
             prob = prob + F.interpolate(p, size=(H, W), mode="bilinear", align_corners=False)
@@ -65,7 +65,7 @@ def predict_prob(model, imgs, device, amp_dtype, tta=False):
 def per_image_miou(pred, gt):
     cm = ConfusionMatrix()
     cm.update(pred, gt)
-    return cm.mean_iou()
+    return cm.present_mean_iou()
 
 
 def save_confusion(cm: ConfusionMatrix, path):
@@ -94,7 +94,8 @@ def save_per_class_bar(cm: ConfusionMatrix, path):
            edgecolor="black")
     ax.set_xticks(range(NUM_CLASSES)); ax.set_xticklabels(CLASS_NAMES, rotation=45, ha="right")
     ax.set_ylabel("IoU"); ax.set_ylim(0, 1)
-    ax.axhline(cm.mean_iou(), color="red", ls="--", label=f"mIoU {cm.mean_iou():.3f}")
+    ax.axhline(cm.present_mean_iou(), color="red", ls="--",
+               label=f"present mIoU {cm.present_mean_iou():.3f}")
     ax.set_title("Per-Class IoU"); ax.legend(); ax.grid(axis="y", alpha=0.3)
     plt.tight_layout(); plt.savefig(path, dpi=130); plt.close()
 
@@ -134,6 +135,7 @@ def main():
     model = build_model(cfg).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
+    patch = model.patch
 
     out_dir = args.output_dir or os.path.join("predictions", args.split)
     masks_dir = os.path.join(out_dir, "masks")
@@ -158,7 +160,7 @@ def main():
         if device.type == "cuda":
             torch.cuda.synchronize()
         t0 = time.time()
-        prob = predict_prob(model, imgs, device, amp_dtype, tta=args.tta)
+        prob = predict_prob(model, imgs, device, amp_dtype, tta=args.tta, patch=patch)
         if device.type == "cuda":
             torch.cuda.synchronize()
         t_total += time.time() - t0
@@ -195,6 +197,8 @@ def main():
     if dataset.has_masks:
         summary = cm.summary_str()
         print("\n" + summary)
+        print(f"\n>>> PRESENT-CLASS mIoU: {cm.present_mean_iou():.4f}   "
+              f"(all-class mIoU: {cm.mean_iou():.4f})")
         with open(os.path.join(out_dir, "evaluation_metrics.txt"), "w") as f:
             f.write(summary + "\n")
             if args.speed:

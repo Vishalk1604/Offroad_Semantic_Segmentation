@@ -68,8 +68,24 @@ class ConfusionMatrix:
             dice = np.where(denom > 0, 2 * tp / denom, np.nan)
         return dice
 
+    def present_mask(self) -> np.ndarray:
+        """Classes that actually appear in the ground truth (row-sum > 0)."""
+        return self.mat.sum(axis=1) > 0
+
     def mean_iou(self) -> float:
+        """All-class mIoU. Classes present in GT contribute their IoU; classes absent
+        from GT but predicted (false positives) count as 0; classes neither present nor
+        predicted are NaN-excluded."""
         return float(np.nanmean(self.iou_per_class()))
+
+    def present_mean_iou(self) -> float:
+        """mIoU over only the classes present in the GT (standard convention). This is
+        the primary metric: it ignores classes that don't exist in this split, so
+        false positives on absent classes don't drag the score."""
+        present = self.present_mask()
+        if not present.any():
+            return float("nan")
+        return float(np.nanmean(self.iou_per_class()[present]))
 
     def mean_dice(self) -> float:
         return float(np.nanmean(self.dice_per_class()))
@@ -81,13 +97,17 @@ class ConfusionMatrix:
     def summary_str(self) -> str:
         iou = self.iou_per_class()
         dice = self.dice_per_class()
-        lines = ["EVALUATION RESULTS", "=" * 50,
-                 f"Mean IoU:        {self.mean_iou():.4f}",
+        present = self.present_mask()
+        n_present = int(present.sum())
+        lines = ["EVALUATION RESULTS", "=" * 56,
+                 f"Present-class mIoU ({n_present} classes): {self.present_mean_iou():.4f}   <- primary",
+                 f"All-class mIoU ({self.num_classes} classes):     {self.mean_iou():.4f}",
                  f"Mean Dice:       {self.mean_dice():.4f}",
                  f"Pixel Accuracy:  {self.pixel_accuracy():.4f}",
-                 "=" * 50, "", "Per-Class IoU / Dice:", "-" * 50]
+                 "=" * 56, "", "Per-Class IoU / Dice:", "-" * 56]
         for i, name in enumerate(CLASS_NAMES):
             iou_s = f"{iou[i]:.4f}" if not np.isnan(iou[i]) else "  N/A "
             dice_s = f"{dice[i]:.4f}" if not np.isnan(dice[i]) else "  N/A "
-            lines.append(f"  {name:<16} IoU {iou_s}   Dice {dice_s}")
+            tag = "" if present[i] else "  (absent in GT)"
+            lines.append(f"  {name:<16} IoU {iou_s}   Dice {dice_s}{tag}")
         return "\n".join(lines)
