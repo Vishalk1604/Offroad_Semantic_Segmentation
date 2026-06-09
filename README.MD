@@ -4,21 +4,29 @@ Semantic segmentation of off‑road desert scenes for UGV autonomy, on Duality A
 synthetic dataset. The core challenge: **train on one synthetic desert environment, generalize to an
 unseen one** — a domain‑generalization problem.
 
-**Architecture:** frozen **DINOv2 ViT‑B/14** foundation backbone + **Rein** parameter‑efficient
-adapters + **DPT** multi‑scale decoder. Built for an **RTX 5060 8 GB (Blackwell)** GPU.
+**Architecture (latest):** frozen **DINOv3 ViT‑L/16** foundation backbone + **Rein** parameter‑efficient
+adapters + **DPT** multi‑scale decoder, with Lovász‑Softmax loss and a two‑view domain‑generalization
+consistency objective. Earlier milestones use DINOv2‑S/B — see the progression below. Built for an
+**RTX 5060 8 GB (Blackwell)** GPU.
 See [`plan.md`](plan.md) for full methodology and [`problem.pdf`](problem.pdf) for the challenge brief.
 
 ---
 
 ## Results summary
 
-| Setup | Val mIoU (env A) | **Test mIoU (unseen env B)** |
-|---|---|---|
-| Baseline — frozen DINOv2 ViT‑S + ConvNeXt head, CE loss, 10 ep | 0.2968 | 0.2232 |
-| **Advanced — DINOv2‑B + Rein + DPT, CE+Dice, aug, EMA, 50 ep** | **0.6507** | **0.2997** |
+| Setup | Val mIoU (env A) | Test present‑class mIoU (env B) | Test all‑10 mIoU (env B) |
+|---|---|---|---|
+| Baseline — DINOv2‑S + ConvNeXt head, CE, 10 ep | 0.2968 | — | 0.2232 |
+| Advanced — DINOv2‑B + Rein + DPT, CE+Dice, aug, EMA, 50 ep | 0.6507 | 0.428 | 0.2997 |
+| **DINOv3‑L + Rein + DPT, +Lovász +consistency, 576×1024, 100 ep** | **0.6956** | **0.4516** | **0.3161** |
 
-Full result artifacts committed under [`initial_results/`](initial_results/) and
-[`advanced_results/`](advanced_results/).
+> **Primary metric is present‑class mIoU.** The unseen test environment contains only **7 of the 10
+> classes** — Ground Clutter, Flowers, and Logs never appear in any of the 1002 test images — so the
+> all‑10 mIoU is mathematically capped at ~0.49. Present‑class mIoU averages IoU only over classes
+> actually present in the ground truth (the standard convention).
+
+Full result artifacts committed under [`initial_results/`](initial_results/),
+[`advanced_results/`](advanced_results/), and [`dinov3_results/`](dinov3_results/).
 
 ---
 
@@ -149,6 +157,54 @@ Common‑area classes (Sky, Landscape, Dry Grass, Trees) improved dramatically; 
 
 Full artifacts: [`advanced_results/`](advanced_results/) — training curves, per‑class IoU bar chart,
 confusion matrix, 8 sample comparisons, 8 worst‑case failure images, and run config.
+
+---
+
+## DINOv3 Results
+
+Frozen **DINOv3 ViT‑L/16** (registers, patch‑16) + Rein adapters + DPT decoder. Weighted **CE + Dice +
+Lovász‑Softmax** loss, wide scale‑jitter + strong photometric/weather/occlusion augmentation, a **two‑view
+domain‑generalization consistency** objective (symmetric‑KL between two photometric views of one crop),
+EMA, bf16 AMP, **576×1024** resolution, 100 epochs. ~30.5 M trainable params over a frozen 333 M backbone.
+
+| Metric | Validation (env A) | Test (unseen env B, +TTA) |
+|---|---|---|
+| **Present‑class mIoU** | **0.6956** | **0.4516** |
+| All‑10 mIoU | 0.6956 | 0.3161 |
+| Pixel accuracy | 0.8875 | 0.6988 |
+
+**Per‑class IoU — validation (env A) vs test (env B):**
+
+| | Sky | Landscape | Trees | Dry Grass | Lush Bushes | Dry Bushes | Rocks | Flowers* | Logs* | Ground Clutter* |
+|---|----:|----:|----:|----:|----:|----:|----:|----:|----:|----:|
+| **Val** | 0.988 | 0.717 | 0.888 | 0.713 | 0.734 | 0.530 | 0.591 | 0.711 | 0.648 | 0.436 |
+| **Test** | 0.980 | 0.716 | 0.459 | 0.490 | 0.001 | 0.459 | 0.057 | — | — | — |
+
+<sub>*Flowers, Logs, Ground Clutter are absent from the test environment (env B), so they have no test IoU.</sub>
+
+### The story: in‑domain solved, domain transfer is the open problem
+
+On **validation** the model essentially reaches the 0.70 target (**0.6956**) and the previously‑hard
+classes are now learned well — Lush Bushes **0 → 0.73**, Rocks **0.08 → 0.59**, Flowers/Logs/Ground Clutter
+all 0.44–0.71. So capacity and class imbalance are no longer the bottleneck.
+
+On the **unseen test** environment, common‑geometry classes transfer strongly (Sky 0.98, Landscape 0.72,
+Dry Bushes/Dry Grass/Trees ~0.46–0.49), but **Rocks (0.057)** and **Lush Bushes (0.0005)** collapse —
+exactly the two classes whose *appearance and scale* differ most between the two environments (Rocks jump
+from ~1.2 % of train pixels to ~18 % of test pixels). The val→test gap (0.696 → 0.452) is therefore a
+**domain‑generalization gap**, not a model‑capacity gap: the network has learned env A almost perfectly but
+does not yet carry Rocks/Lush‑Bushes appearance across to env B. Closing that gap (e.g. texture/style
+randomization and copy‑paste targeted at Rocks, stronger consistency on those classes) is the next lever.
+
+Progress across milestones: val mIoU **0.297 → 0.651 → 0.696**; test present‑class mIoU **0.428 → 0.452**;
+test all‑10 mIoU **0.223 → 0.300 → 0.316**.
+
+Full artifacts: [`dinov3_results/`](dinov3_results/) — training curves, per‑class IoU, confusion matrix,
+8 sample comparisons, 8 worst‑case failures, and run config.
+
+> The `dinov3-large` backbone is **gated** on HuggingFace (accept the license + use a read token). The
+> non‑gated **`dinov2-reg-large`** (DINOv2‑with‑registers ViT‑L) is a drop‑in replacement on the identical
+> code path if gating is inconvenient.
 
 ---
 
