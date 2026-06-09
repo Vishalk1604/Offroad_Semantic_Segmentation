@@ -123,6 +123,8 @@ def parse_args(cfg: Config):
     p.add_argument("--consistency-weight", type=float, default=cfg.consistency_weight)
     p.add_argument("--pasta", action="store_true",
                    help="PASTA Fourier amplitude augmentation (syn->real style gap)")
+    p.add_argument("--copy-paste", action="store_true",
+                   help="paste scaled-up Rocks regions (manufacture env-B-like rock fields)")
     p.add_argument("--no-rein", action="store_true")
     p.add_argument("--no-ema", action="store_true")
     p.add_argument("--no-class-weights", action="store_true")
@@ -144,7 +146,7 @@ def main():
         num_workers=args.num_workers, dice_weight=args.dice_weight,
         lovasz_weight=args.lovasz_weight, consistency=args.consistency,
         consistency_weight=args.consistency_weight, pasta=args.pasta,
-        use_rein=not args.no_rein,
+        copy_paste=args.copy_paste, use_rein=not args.no_rein,
         use_ema=not args.no_ema, use_class_weights=not args.no_class_weights,
         amp=not args.no_amp, early_stop_patience=args.early_stop_patience,
         seed=args.seed, out_dir=args.out_dir,
@@ -166,7 +168,11 @@ def main():
     train_set = MaskDataset("train", cfg.img_h, cfg.img_w, augment=True,
                             two_view=cfg.consistency, pasta=cfg.pasta,
                             pasta_alpha=cfg.pasta_alpha, pasta_k=cfg.pasta_k,
-                            pasta_beta=cfg.pasta_beta, pasta_p=cfg.pasta_p)
+                            pasta_beta=cfg.pasta_beta, pasta_p=cfg.pasta_p,
+                            copy_paste=cfg.copy_paste, copy_paste_p=cfg.copy_paste_p,
+                            copy_paste_classes=cfg.copy_paste_classes,
+                            copy_paste_scale=cfg.copy_paste_scale,
+                            copy_paste_min_pixels=cfg.copy_paste_min_pixels)
     val_set = MaskDataset("val", cfg.img_h, cfg.img_w, augment=False)
     print(f"Train: {len(train_set)} | Val: {len(val_set)}")
     train_loader = DataLoader(train_set, batch_size=cfg.batch_size, shuffle=True,

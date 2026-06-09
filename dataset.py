@@ -16,6 +16,7 @@ DG consistency loss in train.py.
 
 import os
 import glob
+import json
 
 import cv2
 import numpy as np
@@ -27,8 +28,10 @@ from albumentations.pytorch import ToTensorV2
 
 from config import (
     VALUE_MAP, IGNORE_INDEX, IMAGE_SUBDIR, MASK_SUBDIR, split_dir,
-    IMAGENET_MEAN, IMAGENET_STD,
+    IMAGENET_MEAN, IMAGENET_STD, CLASS_NAMES,
 )
+
+SKY_INDEX = CLASS_NAMES.index("Sky")   # never paste rocks over the sky
 
 cv2.setNumThreads(0)  # avoid oversubscription with DataLoader workers
 
@@ -136,7 +139,10 @@ class MaskDataset(Dataset):
 
     def __init__(self, split: str, img_h: int, img_w: int, augment: bool = False,
                  two_view: bool = False, pasta: bool = False, pasta_alpha: float = 3.0,
-                 pasta_k: float = 2.0, pasta_beta: float = 0.25, pasta_p: float = 0.5):
+                 pasta_k: float = 2.0, pasta_beta: float = 0.25, pasta_p: float = 0.5,
+                 copy_paste: bool = False, copy_paste_p: float = 0.5,
+                 copy_paste_classes=(7,), copy_paste_scale=(1.0, 2.5),
+                 copy_paste_min_pixels: int = 1500):
         base = split_dir(split)
         self.image_dir = os.path.join(base, IMAGE_SUBDIR)
         self.mask_dir = os.path.join(base, MASK_SUBDIR)
@@ -151,6 +157,17 @@ class MaskDataset(Dataset):
         self.pasta = pasta and augment
         self.pasta_alpha, self.pasta_k, self.pasta_beta, self.pasta_p = (
             pasta_alpha, pasta_k, pasta_beta, pasta_p)
+        # Copy-paste (train-only): build a per-class index of source images from THIS split.
+        self.copy_paste = copy_paste and augment and self.has_masks
+        self.copy_paste_p = copy_paste_p
+        self.copy_paste_classes = tuple(copy_paste_classes)
+        self.copy_paste_scale = tuple(copy_paste_scale)
+        self._cp_ids = {}
+        if self.copy_paste:
+            for cls in self.copy_paste_classes:
+                self._cp_ids[cls] = build_class_index(split, cls, copy_paste_min_pixels)
+            kept = {c: len(v) for c, v in self._cp_ids.items()}
+            print(f"Copy-paste source index (min {copy_paste_min_pixels}px): {kept}")
 
     def __len__(self):
         return len(self.ids)
@@ -160,6 +177,60 @@ class MaskDataset(Dataset):
         if self.pasta and np.random.rand() < self.pasta_p:
             x = pasta_perturb(x, self.pasta_alpha, self.pasta_k, self.pasta_beta)
         return self.post(image=x)["image"]
+
+    def _paste_class(self, img_g, mask_g):
+        """Paste 1-3 scaled-up source regions to manufacture larger, more frequent rock
+        fields (env-B-like) than the small scattered rocks of the train domain."""
+        for _ in range(np.random.randint(1, 4)):
+            img_g, mask_g = self._paste_once(img_g, mask_g)
+        return img_g, mask_g
+
+    def _paste_once(self, img_g, mask_g):
+        """Composite a scaled-up region of a target class from a random source image onto
+        the current crop (image + label mask). Returns (img, mask), unchanged on failure."""
+        h, w = mask_g.shape[:2]
+        cls = self.copy_paste_classes[np.random.randint(len(self.copy_paste_classes))]
+        ids = self._cp_ids.get(cls, [])
+        if not ids:
+            return img_g, mask_g
+        sid = ids[np.random.randint(len(ids))]
+        s_img = cv2.imread(os.path.join(self.image_dir, sid), cv2.IMREAD_COLOR)
+        s_raw = cv2.imread(os.path.join(self.mask_dir, sid), cv2.IMREAD_UNCHANGED)
+        if s_img is None or s_raw is None:
+            return img_g, mask_g
+        s_img = cv2.cvtColor(s_img, cv2.COLOR_BGR2RGB)
+        s_img = cv2.resize(s_img, (w, h), interpolation=cv2.INTER_LINEAR)
+        s_mask = cv2.resize(convert_mask(s_raw), (w, h), interpolation=cv2.INTER_NEAREST)
+
+        region = s_mask == cls
+        if region.sum() < 100:
+            return img_g, mask_g
+        ys, xs = np.where(region)
+        y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+        crop_img = s_img[y0:y1, x0:x1]
+        crop_reg = region[y0:y1, x0:x1]
+
+        scale = np.random.uniform(*self.copy_paste_scale)            # enlarge -> big rock fields
+        nh = max(1, min(int(crop_img.shape[0] * scale), h))
+        nw = max(1, min(int(crop_img.shape[1] * scale), w))
+        crop_img = cv2.resize(crop_img, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        crop_reg = cv2.resize(crop_reg.astype(np.uint8), (nw, nh),
+                              interpolation=cv2.INTER_NEAREST).astype(bool)
+        if not crop_reg.any():
+            return img_g, mask_g
+
+        # bias placement toward the lower (ground) part of the frame
+        lo = min(int(0.30 * h), h - nh)
+        oy = np.random.randint(lo, h - nh + 1)
+        ox = np.random.randint(0, w - nw + 1)
+        img_g, mask_g = img_g.copy(), mask_g.copy()
+        sub_img = img_g[oy:oy + nh, ox:ox + nw]
+        sub_mask = mask_g[oy:oy + nh, ox:ox + nw]
+        # never paste over Sky -> keeps composites physically plausible (rocks on ground)
+        allowed = crop_reg & (sub_mask != SKY_INDEX)
+        sub_img[allowed] = crop_img[allowed]
+        sub_mask[allowed] = cls
+        return img_g, mask_g
 
     def __getitem__(self, idx):
         data_id = self.ids[idx]
@@ -174,11 +245,38 @@ class MaskDataset(Dataset):
 
         g = self.geo(image=img, mask=mask)
         img_g, mask_g = g["image"], g["mask"]
+        if self.copy_paste and np.random.rand() < self.copy_paste_p:
+            img_g, mask_g = self._paste_class(img_g, mask_g)
         mask_t = torch.from_numpy(np.ascontiguousarray(mask_g)).long()
 
         if self.two_view:
             return self._view(img_g), self._view(img_g), mask_t, data_id
         return self._view(img_g), mask_t, data_id
+
+
+def build_class_index(split: str, class_idx: int, min_pixels: int = 1500,
+                      cache_path: str = None) -> list:
+    """Return the list of image ids in `split` whose mask contains at least `min_pixels`
+    pixels of `class_idx`. Result is cached to JSON (per class) like the class-weight cache."""
+    from config import ROOT
+    cache_path = cache_path or os.path.join(ROOT, f"class_index_c{class_idx}.json")
+    if os.path.exists(cache_path):
+        with open(cache_path) as f:
+            blob = json.load(f)
+        if blob.get("min_pixels") == min_pixels:
+            return blob["ids"]
+    base = split_dir(split)
+    mask_dir = os.path.join(base, MASK_SUBDIR)
+    ids = []
+    for path in sorted(glob.glob(os.path.join(mask_dir, "*"))):
+        raw = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        if raw is None:
+            continue
+        if int((convert_mask(raw) == class_idx).sum()) >= min_pixels:
+            ids.append(os.path.basename(path))
+    with open(cache_path, "w") as f:
+        json.dump({"ids": ids, "class_idx": class_idx, "min_pixels": min_pixels}, f)
+    return ids
 
 
 def count_class_pixels(split: str = "train") -> np.ndarray:

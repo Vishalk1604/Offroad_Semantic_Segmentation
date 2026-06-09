@@ -130,6 +130,14 @@ class Config:
     pasta_beta: float = 0.25     # baseline jitter applied to all frequencies
     pasta_p: float = 0.5         # per-image probability
 
+    # Copy-paste augmentation: paste scaled-up Rocks regions to manufacture the large rock
+    # fields that dominate the unseen test env (env B) but barely exist in train (env A).
+    copy_paste: bool = False
+    copy_paste_p: float = 0.5
+    copy_paste_classes: tuple = (7,)         # Rocks (train index 7)
+    copy_paste_scale: tuple = (1.5, 3.0)     # random up-scale of the pasted region
+    copy_paste_min_pixels: int = 1500        # min class pixels for a source image to qualify
+
     # EMA / regularization
     use_ema: bool = True
     ema_decay: float = 0.999

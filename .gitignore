@@ -5,6 +5,8 @@ predictions/
 *.pt
 *.ckpt
 class_weights.json
+class_index_c*.json
+_aug_check/
 
 # datasets (large; downloaded from Falcon)
 Offroad_Segmentation_Training_Dataset/
