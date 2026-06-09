@@ -121,6 +121,8 @@ def parse_args(cfg: Config):
     p.add_argument("--lovasz-weight", type=float, default=cfg.lovasz_weight)
     p.add_argument("--consistency", action="store_true", help="two-view DG consistency loss")
     p.add_argument("--consistency-weight", type=float, default=cfg.consistency_weight)
+    p.add_argument("--pasta", action="store_true",
+                   help="PASTA Fourier amplitude augmentation (syn->real style gap)")
     p.add_argument("--no-rein", action="store_true")
     p.add_argument("--no-ema", action="store_true")
     p.add_argument("--no-class-weights", action="store_true")
@@ -141,7 +143,8 @@ def main():
         weight_decay=args.weight_decay, warmup_epochs=args.warmup_epochs,
         num_workers=args.num_workers, dice_weight=args.dice_weight,
         lovasz_weight=args.lovasz_weight, consistency=args.consistency,
-        consistency_weight=args.consistency_weight, use_rein=not args.no_rein,
+        consistency_weight=args.consistency_weight, pasta=args.pasta,
+        use_rein=not args.no_rein,
         use_ema=not args.no_ema, use_class_weights=not args.no_class_weights,
         amp=not args.no_amp, early_stop_patience=args.early_stop_patience,
         seed=args.seed, out_dir=args.out_dir,
@@ -160,7 +163,10 @@ def main():
         json.dump(cfg.to_dict(), f, indent=2)
 
     # data
-    train_set = MaskDataset("train", cfg.img_h, cfg.img_w, augment=True, two_view=cfg.consistency)
+    train_set = MaskDataset("train", cfg.img_h, cfg.img_w, augment=True,
+                            two_view=cfg.consistency, pasta=cfg.pasta,
+                            pasta_alpha=cfg.pasta_alpha, pasta_k=cfg.pasta_k,
+                            pasta_beta=cfg.pasta_beta, pasta_p=cfg.pasta_p)
     val_set = MaskDataset("val", cfg.img_h, cfg.img_w, augment=False)
     print(f"Train: {len(train_set)} | Val: {len(val_set)}")
     train_loader = DataLoader(train_set, batch_size=cfg.batch_size, shuffle=True,

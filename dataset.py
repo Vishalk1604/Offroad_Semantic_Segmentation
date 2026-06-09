@@ -101,11 +101,42 @@ def build_post():
     return A.Compose([A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD), ToTensorV2()])
 
 
+def pasta_perturb(img: np.ndarray, alpha: float = 3.0, k: float = 2.0,
+                  beta: float = 0.25) -> np.ndarray:
+    """PASTA (Proportional Amplitude Spectrum Training Augmentation, arXiv:2212.00979).
+
+    Perturbs the Fourier *amplitude* spectrum (low-level style/texture) with frequency-
+    dependent multiplicative jitter while leaving the *phase* (semantics/layout) untouched.
+    Higher spatial frequencies get stronger perturbation, simulating the appearance shift
+    between the synthetic source and the unseen target environment.
+
+    img: HxWx3 uint8 RGB. Returns a uint8 RGB image of the same shape.
+    """
+    h, w = img.shape[:2]
+    # centered (DC at middle, post-fftshift) normalized radial frequency, max ~0.5
+    m = (np.arange(h) - h / 2.0)[:, None]
+    n = (np.arange(w) - w / 2.0)[None, :]
+    freq = np.sqrt(m * m + n * n) / np.sqrt(h * h + w * w)
+    sigma = (2.0 * alpha * np.sqrt(freq)) ** k + beta            # (H, W)
+
+    x = img.astype(np.float32)
+    out = np.empty_like(x)
+    for c in range(img.shape[2]):
+        f = np.fft.fftshift(np.fft.fft2(x[..., c]))
+        amp, phase = np.abs(f), np.angle(f)
+        eps = 1.0 + sigma * np.random.randn(h, w)
+        np.clip(eps, 0.0, None, out=eps)                        # no negative amplitude
+        f2 = (amp * eps) * np.exp(1j * phase)
+        out[..., c] = np.fft.ifft2(np.fft.ifftshift(f2)).real
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
 class MaskDataset(Dataset):
     """Loads (image, mask, id) — or (image1, image2, mask, id) when two_view — for a split."""
 
     def __init__(self, split: str, img_h: int, img_w: int, augment: bool = False,
-                 two_view: bool = False):
+                 two_view: bool = False, pasta: bool = False, pasta_alpha: float = 3.0,
+                 pasta_k: float = 2.0, pasta_beta: float = 0.25, pasta_p: float = 0.5):
         base = split_dir(split)
         self.image_dir = os.path.join(base, IMAGE_SUBDIR)
         self.mask_dir = os.path.join(base, MASK_SUBDIR)
@@ -115,12 +146,19 @@ class MaskDataset(Dataset):
         self.photo = build_photometric(augment)
         self.post = build_post()
         self.two_view = two_view and augment
+        # PASTA (image-only); applied per view so the two consistency views get independent
+        # amplitude perturbations of the same crop -> stronger style-invariance signal.
+        self.pasta = pasta and augment
+        self.pasta_alpha, self.pasta_k, self.pasta_beta, self.pasta_p = (
+            pasta_alpha, pasta_k, pasta_beta, pasta_p)
 
     def __len__(self):
         return len(self.ids)
 
     def _view(self, img_g):
         x = self.photo(image=img_g)["image"] if self.photo is not None else img_g
+        if self.pasta and np.random.rand() < self.pasta_p:
+            x = pasta_perturb(x, self.pasta_alpha, self.pasta_k, self.pasta_beta)
         return self.post(image=x)["image"]
 
     def __getitem__(self, idx):

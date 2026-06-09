@@ -122,6 +122,14 @@ class Config:
     consistency: bool = False
     consistency_weight: float = 1.0
 
+    # PASTA: Fourier amplitude-spectrum augmentation (bridges the env-A->B style/texture gap).
+    # Perturbs the amplitude spectrum (style) while preserving phase (semantics).
+    pasta: bool = False
+    pasta_alpha: float = 3.0     # perturbation strength
+    pasta_k: float = 2.0         # frequency exponent (higher freq -> stronger perturbation)
+    pasta_beta: float = 0.25     # baseline jitter applied to all frequencies
+    pasta_p: float = 0.5         # per-image probability
+
     # EMA / regularization
     use_ema: bool = True
     ema_decay: float = 0.999
