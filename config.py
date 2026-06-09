@@ -141,6 +141,7 @@ class Config:
     # EMA / regularization
     use_ema: bool = True
     ema_decay: float = 0.999
+    head_dropout: float = 0.1           # Dropout2d in the DPT decoder (curbs env-A overfit)
 
     # misc
     seed: int = 0

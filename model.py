@@ -80,7 +80,8 @@ class FeatureFusionBlock(nn.Module):
 
 
 class DPTHead(nn.Module):
-    def __init__(self, in_dim: int, num_classes: int, features: int = 256):
+    def __init__(self, in_dim: int, num_classes: int, features: int = 256,
+                 dropout: float = 0.1):
         super().__init__()
         self.proj = nn.ModuleList([nn.Conv2d(in_dim, features, 1) for _ in range(4)])
         # multi-scale reassemble: 4x, 2x, 1x, 0.5x relative to the patch grid
@@ -94,6 +95,7 @@ class DPTHead(nn.Module):
         self.head = nn.Sequential(
             nn.Conv2d(features, features, 3, padding=1),
             nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout),               # regularize the trainable decoder (anti-overfit to env A)
             nn.Conv2d(features, num_classes, 1),
         )
 
@@ -129,7 +131,7 @@ class OffroadSegModel(nn.Module):
         self.use_rein = cfg.use_rein
         if self.use_rein:
             self.adapters = nn.ModuleList([ReinAdapter(dim, cfg.rein_tokens) for _ in self.taps])
-        self.head = DPTHead(dim, cfg.num_classes)
+        self.head = DPTHead(dim, cfg.num_classes, dropout=getattr(cfg, "head_dropout", 0.1))
         self._desc = (f"{cfg.backbone} (dim={dim}, depth={depth}, patch={self.patch}, "
                       f"reg={self.n_skip - 1})")
 
