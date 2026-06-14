@@ -18,15 +18,20 @@ See [`plan.md`](plan.md) for full methodology and [`problem.pdf`](problem.pdf) f
 |---|---|---|---|
 | Baseline — DINOv2‑S + ConvNeXt head, CE, 10 ep | 0.2968 | — | 0.2232 |
 | Advanced — DINOv2‑B + Rein + DPT, CE+Dice, aug, EMA, 50 ep | 0.6507 | 0.428 | 0.2997 |
-| **DINOv3‑L + Rein + DPT, +Lovász +consistency, 576×1024, 100 ep** | **0.6956** | **0.4516** | **0.3161** |
+| DINOv3‑L + Rein + DPT, +Lovász +consistency, 576×1024, 100 ep | 0.6956 | 0.4516 | 0.3161 |
+| **DINOv3‑L + full DG recipe (PASTA + copy‑paste + dropout), 100 ep** | **0.6676** | **0.4465** | **0.3907†** |
 
 > **Primary metric is present‑class mIoU.** The unseen test environment contains only **7 of the 10
 > classes** — Ground Clutter, Flowers, and Logs never appear in any of the 1002 test images — so the
 > all‑10 mIoU is mathematically capped at ~0.49. Present‑class mIoU averages IoU only over classes
 > actually present in the ground truth (the standard convention).
+>
+> †M4 all‑10 averages over 8 classes (Flowers and Logs treated as N/A rather than 0); comparable
+> 10‑class denominator value is 0.3125.
 
 Full result artifacts committed under [`initial_results/`](initial_results/),
-[`advanced_results/`](advanced_results/), and [`dinov3_results/`](dinov3_results/).
+[`advanced_results/`](advanced_results/), [`dinov3_results/`](dinov3_results/), and
+[`dinov3_v2_results/`](dinov3_v2_results/).
 
 ---
 
@@ -205,6 +210,63 @@ Full artifacts: [`dinov3_results/`](dinov3_results/) — training curves, per‑
 > The `dinov3-large` backbone is **gated** on HuggingFace (accept the license + use a read token). The
 > non‑gated **`dinov2-reg-large`** (DINOv2‑with‑registers ViT‑L) is a drop‑in replacement on the identical
 > code path if gating is inconvenient.
+
+---
+
+## Milestone 4 — Domain‑Gap Closing Recipe
+
+Same DINOv3‑L + Rein + DPT core, with three additional domain‑generalization techniques trained
+for 100 epochs:
+
+| Technique | What it does | Research basis |
+|---|---|---|
+| **PASTA** | Perturbs Fourier amplitude (style/texture) while preserving phase (semantics) | [arXiv 2212.00979](https://ar5iv.labs.arxiv.org/html/2212.00979) |
+| **Rocks copy‑paste** | Pastes scaled‑up (1.5–3×) Rocks regions to manufacture env‑B‑like rock fields | [Ghiasi et al. 2021](https://www.researchgate.net/publication/355864719_Simple_Copy-Paste_is_a_Strong_Data_Augmentation_Method_for_Instance_Segmentation) |
+| **DPT decoder dropout** | `Dropout2d(0.1)` before the final conv to regularise the trainable decoder | [DGSS survey](https://www.arxiv.org/pdf/2510.03540) |
+
+Training command:
+```powershell
+python train.py --backbone dinov3-large --img-h 576 --img-w 1024 `
+  --batch-size 2 --grad-accum 2 --consistency --consistency-weight 2.0 `
+  --lovasz-weight 1.5 --pasta --copy-paste --weight-decay 0.05 `
+  --epochs 100 --seed 0
+```
+
+| Metric | Validation (env A) | Test (unseen env B, +TTA) |
+|---|---|---|
+| **Present‑class mIoU** | **0.6676** | **0.4465** |
+| All‑class mIoU | 0.6676 | 0.3907† |
+| Pixel accuracy | 0.8772 | 0.7004 |
+
+**Per‑class test IoU — M3 (baseline) → M4 (this run):**
+
+| Class | M3 | M4 | Δ |
+|---|---|---|---|
+| Trees | 0.459 | 0.420 | −0.040 |
+| Lush Bushes | 0.001 | 0.002 | +0.001 |
+| Dry Grass | 0.490 | 0.481 | −0.009 |
+| Dry Bushes | 0.459 | **0.492** | **+0.033** |
+| Rocks | 0.057 | 0.063 | +0.006 |
+| Landscape | 0.716 | 0.689 | −0.027 |
+| Sky | 0.980 | 0.979 | −0.001 |
+
+### Analysis
+
+The heavy augmentation recipe added meaningful regularisation — val Rocks jumped to **0.538** (from
+~0.59 M3) and Dry Bushes improved on test (+0.033) — but the primary gain on **test** Rocks that we
+targeted (0.057 → 0.4+) did not materialise.  The deeper difficulty: PASTA and copy‑paste shift the
+*appearance distribution* seen during training, but the test env‑B Rocks class differs in both
+*appearance* (redder, fine‑grained) **and geometry** (occupying 18 % of pixels vs 1.2 % in train).
+The copy‑paste only addresses scale/frequency, not the appearance discrepancy.
+
+Common‑geometry classes (Trees, Landscape) regressed slightly — consistent with the heavier
+augmentation forcing the decoder into a more conservative mode.  Val mIoU falling 0.6956 → 0.6676
+while test stays ~flat suggests the augmentation successfully reduced *overfitting to env‑A* but
+the remaining gap is driven by genuine appearance/distribution shift that augmentation alone cannot
+fully bridge.
+
+Full artifacts: [`dinov3_v2_results/`](dinov3_v2_results/) — training curves, per‑class IoU,
+confusion matrix, 8 worst‑case failures, and run config.
 
 ---
 
