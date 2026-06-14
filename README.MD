@@ -250,20 +250,38 @@ python train.py --backbone dinov3-large --img-h 576 --img-w 1024 `
 | Landscape | 0.716 | 0.689 | −0.027 |
 | Sky | 0.980 | 0.979 | −0.001 |
 
-### Analysis
+### Why the result dropped
 
-The heavy augmentation recipe added meaningful regularisation — val Rocks jumped to **0.538** (from
-~0.59 M3) and Dry Bushes improved on test (+0.033) — but the primary gain on **test** Rocks that we
-targeted (0.057 → 0.4+) did not materialise.  The deeper difficulty: PASTA and copy‑paste shift the
-*appearance distribution* seen during training, but the test env‑B Rocks class differs in both
-*appearance* (redder, fine‑grained) **and geometry** (occupying 18 % of pixels vs 1.2 % in train).
-The copy‑paste only addresses scale/frequency, not the appearance discrepancy.
+Despite a research‑backed recipe, M4 came in **slightly below M3** on both splits (val 0.6956 → 0.6676,
+test present‑class 0.4516 → 0.4465). The post‑mortem:
 
-Common‑geometry classes (Trees, Landscape) regressed slightly — consistent with the heavier
-augmentation forcing the decoder into a more conservative mode.  Val mIoU falling 0.6956 → 0.6676
-while test stays ~flat suggests the augmentation successfully reduced *overfitting to env‑A* but
-the remaining gap is driven by genuine appearance/distribution shift that augmentation alone cannot
-fully bridge.
+1. **Over‑regularisation under a fixed budget.** Stacking PASTA + copy‑paste + decoder dropout (0.1) +
+   higher weight decay (0.05) + higher consistency (2.0) and Lovász (1.5) weights *simultaneously*
+   pushed the model from overfitting toward **under‑fitting env A**. The val drop (0.696 → 0.668) is the
+   direct signature of this: the same 100‑epoch schedule and LR were no longer enough for the
+   more‑constrained objective to reconverge. Each technique is individually sound, but applied together
+   without re‑tuning the schedule they compounded into net regression.
+
+2. **Copy‑paste fixed scale, not appearance.** The Rocks gap is the headline target (test IoU ~0.06).
+   Copy‑paste raised rock *frequency and scale* in training, but env‑B rocks differ mainly in
+   **appearance** — colour and fine texture — which pasting env‑A rock pixels cannot synthesise. So the
+   intervention addressed the wrong axis of the shift; test Rocks barely moved (0.057 → 0.063).
+
+3. **PASTA is global, the gap is class‑conditional.** Amplitude‑spectrum perturbation randomises *whole‑image*
+   style. The residual domain gap, however, is concentrated in two classes (Rocks, Lush Bushes). A global
+   style augmentation dilutes its effect across all pixels instead of targeting the classes that actually
+   fail to transfer.
+
+4. **The remaining gap is genuine distribution shift, not capacity.** On val the model already learns every
+   class well (Rocks 0.54, Lush Bushes 0.70). Augmentation can reduce *source overfitting* but cannot
+   manufacture the true target distribution from synthetic env‑A data alone. The synthetic‑to‑unseen gap is
+   the fundamental ceiling here, and closing it further needs target‑domain signal (e.g. unlabeled env‑B
+   images for self‑training / domain adaptation), not more source‑side augmentation.
+
+**Net:** M3 (DINOv3‑L + Lovász + consistency) remains the strongest configuration and is the result of
+record for this project. M4 is retained as a documented negative result — the augmentation correctly
+reduced env‑A overfitting (smaller val→test gap in relative terms) but traded a little raw accuracy to do
+it, and the levers chosen could not bridge the appearance‑driven Rocks gap.
 
 Full artifacts: [`dinov3_v2_results/`](dinov3_v2_results/) — training curves, per‑class IoU,
 confusion matrix, 8 worst‑case failures, and run config.
